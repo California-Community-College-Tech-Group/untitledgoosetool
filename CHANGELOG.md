@@ -2,6 +2,133 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.3] - Enter the honk - 2024-09-23
+### Added
+- Better task naming for logging
+- Added Microsoft Graph role ThreatHunting.Read.All
+- Added Log Analytics API role Data.Read
+- Added dumping for Log Analytics Workspace
+
+### Changed
+- Updated versions of required packages
+- Create_SP.ps1 script will find existing an existing role group with the app name instead of erroring
+
+### Fixed
+- Resolved issue with dumper cmd arguments for honk command not working (e.g. goosey honk --entraid)
+- Issue identified in d4iot dumpers 
+
+## [2.0.2] - Enter the honk - 2024-08-21
+### Added
+- Better task naming for logging
+
+### Changed
+- Updated versions of required packages
+
+### Fixed
+- Resolved some errors for config collection. Specifically relating to the security contacts collection
+
+
+## [2.0.1] - Enter the honk - 2024-07-31
+### Added
+- More Documentation
+
+### Changed
+- Changed all azuread to entraid
+- Removed version and author information from every file
+
+### Fixed
+- Endless pulling issue for sign in logs when endtime wasn't specified 
+
+## [2.0.0] - Enter the honk - 2024-05-08
+### Added
+- autohonk. No more manual authentication
+- Variables added to the conf to modify ual tasks running as well as optional extra time field
+
+### Changed
+- more efficient ual pulling. Lots of improvements that led to an 800% speed up.
+- fixed asynchronous issue with azure dumpers
+- Better Logging for python3.12. Changed the docker image to use that as well
+
+### Fixed
+- Asynchronous issues with azure dumpers
+- No save state for azure activity log
+
+## [2.0.0-b] - Enter the honk - 2024-02-08
+### Added
+- Powershell script for tying service principal to exchange online
+- App only authentication
+- `goosey conf` command to generate the conf. Includes comments for each field
+- Variables added to the conf to modify thresholds and modes during goosey honk
+
+### Changed
+- Ual changed endpoints due to previous endpoint deprecation. New endpoint uses app auth tied to exchange online. No user tokens required for anything anymore.
+- Mde improvements and mode added to choose between table mode and machine.
+- Cli framework switched to fire instead of argparse
+- Graze is gone. Due to ual change
+- GUI is gone due to not being supported.
+- Powershell dumper for m365 switched to python implementation
+- delegated auth pull removed. Permissions too strong
+- auth no longer saves unencrypted creds/tokens to disk in secure mode at any point
+- Summarized configuration pulls in AzureAD and Azure.
+
+### Fixed
+- duplication in ual logs. Duplicates returned are now deduped before saving
+
+## [1.2.6] - The goose is loose - 2023-09-15
+### Added
+- Delegated auth pull for featureRolloutPolicies
+- Made goose proxy aware
+
+### Changed
+- Consolidated auth code and enabled secure by default
+- Made graze faster
+
+### Fixed
+- Fixed AzureAD activity log dumper bug that failed if there were multiple subscriptions
+
+## [1.2.5] - The goose is loose - 2023-08-04
+### Added
+
+### Changed
+- Updated `cryptography` to 41.0.3 based on dependabot.
+
+### Fixed
+- Incorporated fix for function `helper_multiple_object` when parent object contains a `/`
+- Updated authentication fix for graze.py and messagetrace.py
+
+## [1.2.4] - The goose is loose - 2023-07-27
+### Added
+
+### Changed
+- Updated and pinned `MSAL` dependencies.
+
+### Fixed
+- Updated `validationkey` logic for m365 authentication.
+- Updated `MSAL` calls to align with the `MSAL` 1.23.0 change.
+
+## [1.2.3] - The goose is loose - 2023-07-20
+### Added
+
+### Changed
+- Updated `cryptography` and `aiohttp` based on dependabot.
+- Updated SBOM files.
+
+### Fixed
+
+## [1.2.2] - The goose is loose - 2023-07-17
+### Added
+- Better catches for when password for the account needs to be updated, when a conditional access policy blocks user account access, or when the user account is flagged for risky actions.
+- Added catch for empty `.conf` fields, will allow more graceful exiting. 
+
+### Changed
+- Updated and pinned `aiohttp`, `colored`, `cryptography`, and `selenium` dependencies and updated Python version to 3.10.11.
+- Pinned 3.1.0 version of ExchangeOnlineManagement PowerShell module.
+- Improved logic for grabbing `validationkey` from requests.
+
+### Fixed
+- Fixed MFA logic for messagetrace.py.
+- Fixed data dumper logic, they will only run if something in their section is set to `True`.
+
 ## [1.2.1] - The goose is loose - 2023-06-06
 ### Added
 - Implemented new tables to be pulled from MDE.

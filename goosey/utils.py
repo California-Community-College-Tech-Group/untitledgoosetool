@@ -11,19 +11,23 @@ import json
 import logging
 import os
 import sys
+import getpass
+import pyAesCrypt
+import io
+import pytz
 
 from colored import stylize, attr, fg
 from datetime import datetime, timedelta, date
 from tracemalloc import start
 from logging import handlers
-
-__author__ = "Claire Casalnova, Jordan Eberst, Wellington Lee, Victoria Wallace"
-__version__ = "1.2.1"
+import dateutil.parser
 
 if sys.platform == 'win32':
     import msvcrt
 else:
     import fcntl
+
+utc = pytz.UTC
 
 # Custom logging from https://stackoverflow.com/questions/384076/how-can-i-color-python-logging-output
 class CustomFormatter(logging.Formatter):
@@ -44,8 +48,11 @@ class CustomFormatter(logging.Formatter):
         red = ""
         bold_red = ""
         reset = ""
-    
-    format = "%(asctime)s - %(module)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+
+    format = "%(asctime)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+    if sys.version_info >= (3,12):
+        # taskName key is only available after python 3.12
+        format = "%(asctime)s - %(taskName)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
 
     FORMATS = {
         logging.DEBUG: blue + format + reset,
@@ -57,35 +64,6 @@ class CustomFormatter(logging.Formatter):
 
     def format(self, record):
         log_fmt = self.FORMATS.get(record.levelno)
-        formatter = logging.Formatter(log_fmt)
-        return formatter.format(record)
-
-class GuiFormatter(logging.Formatter):
-    """Logging Formatter to add colors and count warning / errors"""
-    
-    format = "%(asctime)s - %(module)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
-
-    DARK_FORMATS = {
-        logging.DEBUG: stylize(format, fg('light_blue')),
-        logging.INFO: stylize(format, fg('light_gray')),
-        logging.WARNING: stylize(format, fg('yellow')),
-        logging.ERROR: stylize(format, fg('light_red')),
-        logging.CRITICAL: stylize(format, fg('light_red') + attr('bold'))
-    }
-
-    LIGHT_FORMATS = {
-        logging.DEBUG: stylize(format, fg('blue')),
-        logging.INFO: stylize(format, fg('dark_gray')),
-        logging.WARNING: stylize(format, fg('dark_green')),
-        logging.ERROR: stylize(format, fg('red')),
-        logging.CRITICAL: stylize(format, fg('red') + attr('bold'))
-    }
-
-    def format(self, record):
-        if darkdetect.isDark():
-            log_fmt = self.DARK_FORMATS.get(record.levelno)
-        else:
-            log_fmt = self.LIGHT_FORMATS.get(record.levelno)
         formatter = logging.Formatter(log_fmt)
         return formatter.format(record)
 
@@ -112,21 +90,25 @@ def setup_logger(name, debug, formatter='cli') -> None:
     error_log = "error.log"
 
     logger = logging.getLogger(name)
-    file_formatter = logging.Formatter('%(asctime)s  %(name)s  %(levelname)s  %(message)s')
+    format = "%(asctime)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+    if sys.version_info >= (3,12):
+        # taskName key is only available after python 3.12
+        format = "%(asctime)s - %(taskName)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+    file_formatter = logging.Formatter(format)
 
-    debug_fh = logging.handlers.WatchedFileHandler(debug_log)   
+    debug_fh = logging.handlers.WatchedFileHandler(debug_log)
     debug_fh.setFormatter(file_formatter)
     debug_fh.addFilter(LogLevelFilter(logging.DEBUG))
     debug_fh.setLevel(logging.DEBUG)
 
-    error_fh = logging.handlers.WatchedFileHandler(error_log)   
+    error_fh = logging.handlers.WatchedFileHandler(error_log)
     error_fh.setFormatter(file_formatter)
     error_fh.addFilter(LogLevelFilter(logging.ERROR))
     error_fh.setLevel(logging.ERROR)
 
     logger.addHandler(debug_fh)
     logger.addHandler(error_fh)
-    
+
 
     if debug:
         logger.setLevel(logging.DEBUG)
@@ -143,11 +125,16 @@ def setup_logger(name, debug, formatter='cli') -> None:
 
     if formatter == 'cli':
         ch.setFormatter(CustomFormatter())
-    elif formatter == 'gui':
-        ch.setFormatter(GuiFormatter())
     logger.addHandler(ch)
 
     return logger
+
+class obj(object):
+    def __init__(self, dict_):
+        self.__dict__.update(dict_)
+
+def dict2obj(d):
+    return json.loads(json.dumps(d), object_hook=obj)
 
 def build_date_range(start_date, end_date):
     res = []
@@ -156,18 +143,18 @@ def build_date_range(start_date, end_date):
     while start_date != end_date:
         res.append((datetime.strptime(start_date,"%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d"))
         start_date = (datetime.strptime(start_date,"%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-    
+
     return res
 
 def build_date_tuples(chunk_size=26, start_date=None, end_date=None):
     """Helper function to chunk last 364 days into 14 chunks
-    
+
     :return: A list of the checkpoint dates when chunking the last 364 days.
     :rtype: List
     """
 
     ret = []
-    
+
     if start_date and end_date:
         start_date = datetime.strptime(start_date,"%Y-%m-%d")
         diff = end_date - start_date
@@ -224,7 +211,7 @@ def config_get(conf, section: str, option: str, logger=None, default=None):
     except configparser.NoSectionError as e:
         err = f"Missing section in config file: {section}. Proceeding."
         if logger:
-            logger.warning(err)  
+            logger.warning(err)
         else:
             print(err)
     except configparser.NoOptionError as e:
@@ -267,9 +254,10 @@ async def get_nextlink(url, outfile, session, logger, auth):
                 elif 'value' not in result2:
                     finalvalue = result2
                 if not skiptoken == '50':
-                    logger.debug('Received nextLink %s' % (skiptoken))
+                    logger.debug(f'Received nextLink {skiptoken} {url}')
 
                 with open(outfile, 'a+', encoding='utf-8') as f:
+                    logger.debug(f"Writing to {outfile}")
                     f.write("\n".join([json.dumps(x) for x in finalvalue]) + '\n')
                     f.flush()
                     os.fsync(f)
@@ -283,7 +271,7 @@ async def get_nextlink(url, outfile, session, logger, auth):
         except Exception as e:
             if retries == 0:
                 logger.info('Error. No more retries on {}.'.format(skiptoken))
-                url = None 
+                url = None
             else:
                 logger.info('Error. Retrying {} up to {} more times'.format(skiptoken, retries))
                 try:
@@ -294,28 +282,189 @@ async def get_nextlink(url, outfile, session, logger, auth):
                         elif e.status == 401:
                             logger.error('Unauthorized message received. Exiting calls.')
                             logger.error("Check auth to make sure it's not expired.")
-                            return                            
+                            return
                         else:
                             logger.info('Error: {}'.format(str(e)))
                         retries -= 1
                 except AttributeError as a:
                     logger.error('Error on nextLink retrieval {}: {}'.format(skiptoken, str(e)))
 
+async def run_kql_query(query, start, end, bounds, url, app_auth, logger, session, threshold=10000, summarize=False):
+    """
+    Run an advanced query or hunt and return the result
+    """
+    # errors from the query that will cause the dumper to sleep
+    sleep_errors = ["Server disconnected", "Cannot connect", "WinError 10054"]
+    # errors from the query that will cause the dumper to cut the tim in half
+    slice_errors = ['exceeded the allowed limits', 'exceeded the allowed result size']
+    # Errors in the authentication token
+    auth_errors = ['TokenExpired']
 
 
-async def helper_single_object(object, params, failurefile=None, retries=5) -> None:
+    header = {
+        'Authorization': '%s %s' % (app_auth['token_type'], app_auth['access_token']),
+        'Content-Type': 'application/json'
+    }
+    # Apply time filters
+    full_query = query
+    if start and not end:
+        full_query += f"|where TimeGenerated > datetime({start})"
+    elif end and not start:
+        full_query += f"|where TimeGenerated < datetime({end})"
+    elif end and start:
+        full_query += f"|where TimeGenerated between(datetime({start})..datetime({end}))"
+
+    if summarize:
+        full_query += f"| summarize Count=count(), FirstEvent=min(TimeGenerated), LastEvent=max(TimeGenerated)"
+    if query.startswith("search \"*\""):
+        full_query += " by $table"
+
+    logger.debug(full_query)
+    payload = {"query": full_query}
+    data=json.dumps(payload)
+    result = None
+    err = None
+    try:
+        async with session.request("POST", url=url, headers=header, data=data) as r:
+            result = await r.json()
+            if r.status == 401:
+                logger.error("Detected 401 unauthorized, exiting.")
+                sys.exit(1)
+            elif r.status == 429:
+                error = result['error']
+                message = error['message']
+                logger.debug(message)
+                await asyncio.sleep(30)
+                err = message
+                result = None
+            else:
+                if "error" in result:
+                    err = result["error"]["message"]
+                if "tables" in result:
+                    result = result["tables"]
+                else:
+                    logger.debug(result)
+                    result = None
+
+    except Exception as e:
+        logger.error('Error on retrieval: {}'.format(str(e)))
+        err = str(e)
+
+    results = map_results(result)
+
+    # Insert a new record into the bounds.
+    count = None
+    done_status = False
+    if summarize and results:
+        count = results[0]["Count"]
+    elif results:
+        count = len(results)
+    if count != None:
+        done_status = count < threshold
+    if bounds:
+        bounds = insert_bounds_record({"count": count,
+                  "start": start,
+                  "end": end,
+                  "done_status": done_status}, bounds)
+    if err:
+        logger.debug(err)
+    if err is TimeoutError or \
+       err and any(e in err for e in slice_errors) or \
+       (count and count >= threshold):
+       new_end_ts = start.timestamp() + ((end.timestamp() - start.timestamp())/2)
+       end = datetime.fromtimestamp(new_end_ts, utc)
+    elif err and any(e in err for e in sleep_errors):
+        await asyncio.sleep(int(60))
+    elif err and any(e in err for e in auth_errors):
+        sys.exit(1)
+
+    return results, err, end, bounds
+
+def map_results(kql_results):
+    """
+    Description:
+        Convert the result resturned from a kql query to a dictionary
+
+    Arguments:
+        kql_results: list of column names and rows that need to be mapped
+
+    Returns:
+        The mapped dictionary
+    """
+    if not kql_results:
+        return None
+    results = []
+    for row in kql_results[0]["rows"]:
+        new_entry = {}
+        for idx, column in enumerate(kql_results[0]["columns"]):
+            new_entry[column["name"]] = row[idx]
+        results.append(new_entry)
+    return results
+
+def insert_bounds_record(record, bounds):
+    """
+    Description:
+        Add a record to the sorted  bounds_state.
+
+    Arguments:
+        record: Tuple of (start, end, count, done_status)
+        bounds: Time Bounds Dictionary
+
+    Returns:
+        bounds. The updated time bounds dictionary
+    """
+    # Perform insert
+    #self.logger.debug(f"Inserting Record {record}")
+
+    if len(bounds) == 0:
+        bounds.append(record)
+        return bounds
+    done_idx = 0
+    for idx, cur_record in enumerate(bounds):
+        # Only situation for an insert here should be where a record already exists with that start
+        # time and we just shrink the bounds
+        if record["start"] == cur_record["start"] and record["end"] <= cur_record["end"]:
+            cur_record["start"] = record["end"]
+            # if the count is less than 0 then it is not accurate
+            if cur_record["count"] != None and cur_record["count"] >= 0 \
+               and record["count"] != None and record["count"] > 0:
+                cur_record["count"] = max(0,cur_record["count"] - record["count"])
+
+            new_records = [record.copy(), cur_record.copy()]
+            if (cur_record["count"] != None and cur_record["count"] == 0) or cur_record["start"] == cur_record["end"]:
+                record["end"] = cur_record["end"]
+                new_records = [record.copy()]
+            bounds = bounds[done_idx:idx] + new_records + bounds[idx+1:]
+            #self.logger.debug(f"Record inserted at index {idx}")
+            break
+    idx = 0
+    while idx < len(bounds):
+        if bounds[idx]["done_status"] == False:
+            break
+        idx += 1
+    return bounds[idx:]
+
+async def helper_single_object(object, params, failurefile=None, retries=5, caller="") -> None:
         url, auth, logger, output_dir, session = params[0], params[1], params[2], params[3], params[4]
+
+        current_task = asyncio.current_task()
+        if "Task" in current_task.get_name():
+            task_name = object.replace("/","_").split("(")[0].split(".")[0]
+            if caller:
+                task_name = f"{caller}_{task_name}"
+            current_task.set_name(task_name)
 
         if 'token_type' not in auth or 'access_token' not in auth:
             logger.error(f"Missing token_type and access_token from auth. Did you auth correctly? (Skipping {object})")
             return
         url += object
+        if '?' in object:
+            object = object.split('?')[0]
         if '/' in object:
             temp = object.split('/')
-            name = '_'.join(temp)
-            object = temp[-1]
-        elif '/' not in object:
-            name = object
+            object = '_'.join(temp)
+        name = object
+        logger.debug(name)
 
         try:
             header = {'Authorization': '%s %s' % (auth['token_type'], auth['access_token'])}
@@ -368,6 +517,7 @@ async def helper_single_object(object, params, failurefile=None, retries=5) -> N
                     elif e.status == 401:
                         logger.error('Unauthorized message received. Exiting calls.')
                         logger.error("Check auth to make sure it's not expired.")
+                        sys.exit(1)
                         return
                     elif e.status == 400:
                         logger.error('Error received on ' + str(object) + ': '  + str(e))
@@ -381,8 +531,8 @@ async def helper_single_object(object, params, failurefile=None, retries=5) -> N
 
 class Lock:
     def __init__(self, fh):
-        self.fh = fh 
-        
+        self.fh = fh
+
     def acquire(self):
         if self.fh != None:
             try:
@@ -413,20 +563,208 @@ def get_end_time_yesterday():
     yesterday = date.today() - timedelta(days=1)
     return datetime.combine(yesterday, datetime.max.time())
 
-def get_authfile(fn, auth_type='app_auth', uri='https://graph.microsoft.com/', logger=logging):
-    if not os.path.isfile(fn):
-        logger.warning("{} auth file missing. Please auth first. Exiting.".format(fn))
+def get_date_range(config, logger=logging):
+    """
+    Description:
+        Read in the date_start and date_end from the config
+
+    Arguments:
+        config: ConfigParser Object containing the goose config
+
+    Returns:
+        Tuple of (date_range_boolean, date_start, date_end)
+    """
+    date_range = False
+    date_start = False
+    date_end = False
+
+    filters = config_get(config, 'filters', 'date_start', logger=logger)
+    if  filters!= '' and filters is not None:
+        date_range=True
+        date_start = config_get(config, 'filters', 'date_start')
+        if config_get(config, 'filters', 'date_end') != '':
+            date_end = config_get(config, 'filters', 'date_end')
+        else:
+            date_end = datetime.now().strftime("%Y-%m-%d") +':00:00.000Z'
+    else:
+        date_range=False
+
+    return (date_range, date_start, date_end)
+
+def insert_time(time_range, start, end):
+    if time_range == None:
+        time_range = []
+    record = {"start": start, "end": end}
+    time_range.append(record)
+    time_range = sorted(time_range, key=lambda x: x['start'])
+    time_range = iter(time_range)
+    new_time_range = []
+    merged = next(time_range).copy()
+    for entry in time_range:
+        start, end = entry['start'], entry['end']
+        if start <= merged['end']:
+            # overlapping, merge
+            merged['end'] = max(merged['end'], end)
+        else:
+            # distinct; yield merged and start a new copy
+            new_time_range.append(merged)
+            merged = entry.copy()
+    new_time_range.append(merged)
+    return new_time_range
+
+def load_state(filepath, is_datetime=True, time_range=False, time_bounds=False):
+    if os.path.isfile(filepath):
+        end = open(filepath, "r").read()
+        if is_datetime:
+            end = dateutil.parser.parse(end)
+        elif time_range or time_bounds:
+            saved_time_range = json.loads(end)
+            new_time_range = []
+            for entry in saved_time_range:
+                start, end = entry["start"], entry["end"]
+                entry["start"] = dateutil.parser.parse(start)
+                entry["end"] = dateutil.parser.parse(end)
+                new_time_range.append(entry)
+            return new_time_range
+        return end
+
+    return None
+
+def save_state(filepath, end, start=None, is_datetime=True, time_range=False, time_bounds=False):
+    if not filepath:
+        return
+    if is_datetime:
+        cur_end = load_state(filepath)
+        if cur_end and cur_end > end:
+            end = cur_end
+    elif time_range and start and end:
+        cur_range = load_state(filepath, is_datetime=False, time_range=True)
+        cur_range = insert_time(cur_range, start, end)
+        end = json.dumps(cur_range, default=str)
+    elif time_bounds:
+        end = json.dumps(end, default=str)
+
+    open(filepath, "w").write(f"{end}")
+
+def find_time_gaps(time_range, start, end):
+    """
+    Description:
+        finds the time gaps in time_range within start and end
+
+    Arguments:
+        time_range: list of dictionary time periods. Each with a start and end
+        start: start time
+        end: end time
+
+    Returns:
+        time gaps list
+    """
+    if time_range == None or len(time_range) == 0:
+        return [{"start": start, "end": end}]
+    gaps = []
+
+    # add beginning gap if it exists
+    if start < time_range[0]["start"]:
+        gaps.append({"start": start, "end": time_range[0]["start"]})
+
+    # for now we will just add all the gaps in time_range and if some of those overlap
+    # with the start end time range we're interested then we'll grab those
+    idx = 0
+    while idx < len(time_range) - 1:
+        cur_end = time_range[idx]["end"]
+        next_start = time_range[idx+1]["start"]
+        gaps.append({"start": cur_end, "end": next_start})
+        idx += 1
+
+    # add end gap if it exists
+    if end > time_range[-1]["end"]:
+        gaps.append({"start": time_range[-1]["end"], "end": end})
+
+
+    actual_gaps = []
+    for record in gaps:
+        if record["start"] < end or record["end"] > start:
+            max_start = max(record["start"], start)
+            min_end = min(record["end"], end)
+            actual_gaps.append({"start": max_start, "end": min_end})
+
+    return actual_gaps
+
+
+def read_auth(filepath: str, logger=logging, encryption_pw=None):
+    try:
+        authString = None
+        dir_path = os.path.dirname(os.path.realpath(filepath))
+        encrypted_filepath = os.path.join(dir_path, filepath + '.aes')
+        if os.path.isfile(encrypted_filepath):
+            if encryption_pw is None:
+                encryption_pw = getpass.getpass("Please type the password for file encryption: ")
+            with open(encrypted_filepath, "rb") as fIn:
+                outStream = io.BytesIO()
+                pyAesCrypt.decryptStream(fIn, outStream, encryption_pw)
+                outStream.seek(0)
+                authString = outStream.getvalue().decode()
+                logger.debug("Decrypted the " + filepath + " file!")
+        else:
+            if os.path.isfile(filepath):
+                authString = open(filepath, "r").read()
+    except Exception as e:
+        logger.error(f"Could not read current authfile: {str(e)}")
         sys.exit(1)
 
-    auth = {}
-    try:
-        with open(fn, 'r') as infile:
-            if auth_type == 'sdk_auth':
-                auth = json.loads(infile.read())[auth_type]
-            else:
-                auth = json.loads(infile.read())[auth_type][uri]
-    except Exception as e:
-        logger.error("{}".format(str(e)))
-        raise e
+    return authString
 
-    return auth
+def write_auth(filepath: str, writestr, logger=logging, encryption_pw=None, insecure=False):
+    try:
+        if not insecure:
+            dir_path = os.path.dirname(os.path.realpath(filepath))
+            encrypted_filepath = os.path.join(dir_path, filepath + '.aes')
+            with open(encrypted_filepath, "wb") as fOut:
+                inStream = io.BytesIO(bytearray(writestr, "utf-8"))
+                pyAesCrypt.encryptStream(inStream, fOut, encryption_pw)
+                logger.debug("Encrypted the " + filepath + " file!")
+                # Delete the unencrypted filepath if it exists
+                if os.path.isfile(filepath):
+                    os.remove(filepath)
+        else:
+            with open(filepath, 'w') as outfile:
+                outfile.write(writestr)
+    except Exception as e:
+        logger.error(f"Error writing auth to file: {str(e)}")
+
+def get_authfile(authfile=".auth", ugt_authfile=".ugt_auth", logger=logging, encryption_pw=None):
+    """
+    Description:
+        Read in Authfile to a dictionary
+
+    Arguments:
+        authfile=".auth": Path to the authentication file that contains the user and app credentials
+        ugt_authfile=".ugt_auth": Path to the authentication file that contains the session json and cookies from authentication
+        logger=logging: Logger
+
+    Returns:
+        Tuple of (auth_un_pw, auth)
+        auth_un_pw: loaded in dictionary of the authfile config
+        auth: loaded in dictionary of the ugt_authfile config
+    """
+    auth = {}
+
+    dir_path = os.path.dirname(os.path.realpath(ugt_authfile))
+    encrypted_auth = os.path.join(dir_path, authfile + '.aes')
+    encrypted_authfile = os.path.join(dir_path, ugt_authfile + '.aes')
+    if not os.path.isfile(ugt_authfile) and not os.path.isfile(encrypted_authfile):
+        logger.warning("{} auth file missing. Please auth first. Exiting.".format(ugt_authfile))
+        sys.exit(1)
+
+    if os.path.isfile(encrypted_auth) and encryption_pw == None:
+        encryption_pw = getpass.getpass("Please type the password for file encryption: ")
+
+    auth_config_str = read_auth(authfile, logger=logger, encryption_pw=encryption_pw)
+
+    auth_un_pw = configparser.ConfigParser()
+    auth_un_pw.read_string(auth_config_str)
+
+    ugt_auth_str = read_auth(ugt_authfile, logger=logger, encryption_pw=encryption_pw)
+    auth = json.loads(ugt_auth_str)
+
+    return (auth_un_pw, auth)
